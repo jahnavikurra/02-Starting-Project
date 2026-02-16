@@ -1,0 +1,80 @@
+import json
+from typing import Any, Dict
+
+from openai import AzureOpenAI
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+
+from src.utils.config import settings
+
+
+GATE_SYSTEM_PROMPT = """
+You are a strict requirements validator for Azure DevOps work items.
+
+Return STRICT JSON only with this shape:
+{
+  "valid": true/false,
+  "reason": "short explanation",
+  "requiredQuestions": ["question1", "question2", "..."],
+  "confidence": 0.0
+}
+
+Rules:
+- valid=true ONLY if the text clearly describes a feature/bug/task with an understandable goal.
+- If text is random, meaningless, too vague, or not actionable => valid=false.
+- requiredQuestions should ask what is missing (e.g., goal, expected behavior, user, scope).
+- confidence between 0.0 and 1.0.
+""".strip()
+
+
+def _client() -> AzureOpenAI:
+    credential = DefaultAzureCredential()
+    token_provider = get_bearer_token_provider(
+        credential,
+        "https://cognitiveservices.azure.com/.default",
+    )
+
+    if not settings.AZURE_OPENAI_ENDPOINT:
+        raise RuntimeError("Missing AZURE_OPENAI_ENDPOINT")
+    if not settings.AZURE_OPENAI_API_VERSION:
+        raise RuntimeError("Missing AZURE_OPENAI_API_VERSION")
+    if not settings.AZURE_OPENAI_DEPLOYMENT:
+        raise RuntimeError("Missing AZURE_OPENAI_DEPLOYMENT")
+
+    return AzureOpenAI(
+        azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+        api_version=settings.AZURE_OPENAI_API_VERSION,
+        azure_ad_token_provider=token_provider,
+    )
+
+
+def gate_validate_notes(notes_text: str) -> Dict[str, Any]:
+    """
+    LLM-based gate to decide if notes are meaningful enough to generate a work item.
+    Returns dict: valid, reason, requiredQuestions, confidence
+    """
+    client = _client()
+
+    resp = client.chat.completions.create(
+        model=settings.AZURE_OPENAI_DEPLOYMENT,
+        messages=[
+            {"role": "system", "content": GATE_SYSTEM_PROMPT},
+            {"role": "user", "content": notes_text.strip()},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.0,  # deterministic for gating
+    )
+
+    raw = resp.choices[0].message.content or "{}"
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Gate returned invalid JSON: {e}. Raw: {raw}")
+
+    # Normalize
+    data.setdefault("valid", False)
+    data.setdefault("reason", "Unclear input")
+    data.setdefault("requiredQuestions", [])
+    data.setdefault("confidence", 0.0)
+
+    return data
