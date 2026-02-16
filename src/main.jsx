@@ -10,7 +10,10 @@ from src.services.llm_gate import gate_validate_notes
 from src.services.llm import generate_work_item_draft
 from src.services.ado import create_work_item
 
-app = FastAPI(title="AI WorkItems Backend")
+app = FastAPI(
+    swagger_js_url="/static/swagger-ui-bundle.js",
+    swagger_css_url="/static/swagger-ui.css",
+    title="AI WorkItems Backend")
 
 
 @app.get("/health")
